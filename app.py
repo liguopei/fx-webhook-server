@@ -19,6 +19,24 @@ def get_headers():
     }
 
 # ==========================================
+# CHECK FOR ACTIVE TRADE
+# ==========================================
+def has_open_trade(symbol):
+    """Check if there is already an open trade for this symbol"""
+    try:
+        url = f"{OANDA_BASE_URL}/v3/accounts/{OANDA_ACCOUNT_ID}/trades"
+        response = requests.get(url, headers=get_headers())
+        trades = response.json().get("trades", [])
+        for trade in trades:
+            if trade["instrument"] == symbol and trade["state"] == "OPEN":
+                print(f"[SKIP] Active trade already exists for {symbol}")
+                return True
+        return False
+    except Exception as e:
+        print(f"[ERROR] Failed to check open trades: {e}")
+        return False
+
+# ==========================================
 # PLACE ORDER
 # ==========================================
 def place_order(symbol, units, stop_price=None, tp_price=None):
@@ -31,10 +49,10 @@ def place_order(symbol, units, stop_price=None, tp_price=None):
     }
 
     if stop_price:
-        order["stopLossOnFill"] = {"price": str(round(float(stop_price), 5))}
+        order["stopLossOnFill"] = {"price": str(round(float(stop_price), 3))}
 
     if tp_price:
-        order["takeProfitOnFill"] = {"price": str(round(float(tp_price), 5))}
+        order["takeProfitOnFill"] = {"price": str(round(float(tp_price), 3))}
 
     payload = {"order": order}
     response = requests.post(url, json=payload, headers=get_headers())
@@ -44,21 +62,18 @@ def place_order(symbol, units, stop_price=None, tp_price=None):
 # CLOSE ALL POSITIONS
 # ==========================================
 def close_all_positions(symbol):
-    # Get open positions
     url = f"{OANDA_BASE_URL}/v3/accounts/{OANDA_ACCOUNT_ID}/positions/{symbol}"
     response = requests.get(url, headers=get_headers())
     position = response.json()
 
     results = []
 
-    # Close long if exists
     long_units = position.get("position", {}).get("long", {}).get("units", "0")
     if float(long_units) > 0:
         close_url = f"{OANDA_BASE_URL}/v3/accounts/{OANDA_ACCOUNT_ID}/positions/{symbol}/close"
         r = requests.put(close_url, json={"longUnits": "ALL"}, headers=get_headers())
         results.append(r.json())
 
-    # Close short if exists
     short_units = position.get("position", {}).get("short", {}).get("units", "0")
     if float(short_units) < 0:
         close_url = f"{OANDA_BASE_URL}/v3/accounts/{OANDA_ACCOUNT_ID}/positions/{symbol}/close"
@@ -72,7 +87,6 @@ def close_all_positions(symbol):
 # ==========================================
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    # Optional secret verification
     secret = request.args.get("secret", "")
     if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
@@ -92,12 +106,16 @@ def webhook():
 
     # BUY
     if action == "buy":
+        if has_open_trade(symbol):
+            return jsonify({"status": "skipped", "reason": "active trade exists", "symbol": symbol}), 200
         units = int(float(qty))
         result, status = place_order(symbol, units, stop, tp)
         return jsonify({"action": "buy", "symbol": symbol, "result": result}), status
 
     # SELL
     elif action == "sell":
+        if has_open_trade(symbol):
+            return jsonify({"status": "skipped", "reason": "active trade exists", "symbol": symbol}), 200
         units = -int(float(qty))
         result, status = place_order(symbol, units, stop, tp)
         return jsonify({"action": "sell", "symbol": symbol, "result": result}), status
@@ -111,7 +129,7 @@ def webhook():
         return jsonify({"error": f"Unknown action: {action}"}), 400
 
 # ==========================================
-# HEALTH CHECK (for UptimeRobot)
+# HEALTH CHECK
 # ==========================================
 @app.route("/health", methods=["GET"])
 def health():
